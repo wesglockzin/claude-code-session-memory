@@ -1,0 +1,20 @@
+{"query": "how should risky changes be rolled out", "gold": "feedback_deploy_in_phases", "adversarial": false}
+{"query": "check the live system before saying something is configured", "gold": "feedback_verify_dont_assume", "adversarial": false}
+{"query": "how do secrets get passed in provisioning scripts", "gold": "feedback_secrets_never_in_logs", "adversarial": false}
+{"query": "how big should a pull request be", "gold": "feedback_small_prs", "adversarial": false}
+{"query": "what do we do before running a schema migration", "gold": "feedback_tests_before_migrations", "adversarial": false}
+{"query": "python requests certificate errors on the corporate network", "gold": "reference_vpn_cert_bundle", "adversarial": false}
+{"query": "CI build fails with linker errors that work locally", "gold": "reference_build_cache_flag", "adversarial": false}
+{"query": "who gets paged for a sev-1 and when does it escalate", "gold": "reference_oncall_escalation", "adversarial": false}
+{"query": "where do feature flags come from in local development", "gold": "reference_feature_flag_service", "adversarial": false}
+{"query": "uploaded files disappearing after three months", "gold": "reference_object_store_lifecycle", "adversarial": false}
+{"query": "status of the search cluster migration", "gold": "project_search_reindex", "adversarial": false}
+{"query": "why is login slow and what is the plan", "gold": "project_login_latency", "adversarial": false}
+{"query": "per-team cloud spend attribution progress", "gold": "project_cost_dashboard", "adversarial": false}
+{"query": "how does the maintainer like to work", "gold": "user_maintainer_profile", "adversarial": false}
+{"query": "where do background jobs run now", "gold": "reference_queue_service_jobs", "adversarial": false}
+{"query": "blast radius small first then widen", "gold": "feedback_deploy_in_phases", "adversarial": true}
+{"query": "trust but confirm against reality", "gold": "feedback_verify_dont_assume", "adversarial": true}
+{"query": "credentials ended up visible in the pipeline output", "gold": "feedback_secrets_never_in_logs", "adversarial": true}
+{"query": "sign-in takes seconds; users complain", "gold": "project_login_latency", "adversarial": true}
+{"query": "stuff we archive keeps vanishing", "gold": "reference_object_store_lifecycle", "adversarial": true}

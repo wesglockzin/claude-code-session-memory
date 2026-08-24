@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: compile
+        run: python -m py_compile session_memory.py eval/eval_recall.py tools/gen_demo_corpus.py tests/test_session_memory.py
+      - name: demo corpus is in sync with its generator
+        run: |
+          python tools/gen_demo_corpus.py
+          git diff --exit-code -- demo-corpus eval/queries.jsonl
+      - name: tests (embedder stubbed — no Ollama in CI)
+        run: |
+          pip install pytest
+          python -m pytest -q
