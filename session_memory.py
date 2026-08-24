@@ -266,7 +266,11 @@ def is_superseded(path: str, stem: str) -> bool:
         for line in fm.splitlines():
             s = line.strip().lower()
             if s.startswith("lifecycle:"):
-                val = s.split(":", 1)[1].strip().strip('"').strip("'")
+                val = s.split(":", 1)[1]
+                # Strip YAML inline comments: `lifecycle: superseded  # note`
+                # must still match, or the filter silently stops applying —
+                # the exact failure class this function exists to remove.
+                val = val.split("#", 1)[0].strip().strip('"').strip("'")
                 return val == "superseded"
         return False
     except Exception as e:

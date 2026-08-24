@@ -80,6 +80,13 @@ def test_unreadable_file_fails_closed(tmp_path):
     assert sm.is_superseded(str(tmp_path / "missing.md"), "missing") is True
 
 
+def test_superseded_with_inline_comment_still_excluded(tmp_path):
+    p = tmp_path / "old.md"
+    p.write_text("---\nlifecycle: superseded  # retired 2024\n---\nbody",
+                 encoding="utf-8")
+    assert sm.is_superseded(str(p), "old") is True
+
+
 def test_prose_supersedes_mention_is_not_a_marker(tmp_path):
     p = tmp_path / "cur.md"
     p.write_text("---\ndescription: supersedes the old one\n---\nbody", encoding="utf-8")
