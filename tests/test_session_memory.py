@@ -1,21 +1,21 @@
 """Tests run WITHOUT Ollama: the embedder is stubbed. What's under test is
 everything around the model — the contracts (fail-open, caps, floor), the
 index lifecycle, the supersession filter, and the eval math."""
+
 import json
 import os
 import subprocess
 import sys
 
-import pytest
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-import session_memory as sm  # noqa: E402
-sys.path.insert(0, os.path.join(ROOT, "eval"))
-import eval_recall as er  # noqa: E402
+import session_memory as sm
 
+sys.path.insert(0, os.path.join(ROOT, "eval"))
+import eval_recall as er
 
 # --- pure functions ---------------------------------------------------------
+
 
 def test_normed_unit_length():
     v = sm.normed([3.0, 4.0])
@@ -27,6 +27,7 @@ def test_normed_zero_vector_unchanged():
 
 
 # --- floor + render contracts ----------------------------------------------
+
 
 def _entry(tmp_path, stem, body="hello world", vec=(1.0, 0.0)):
     p = tmp_path / f"{stem}.md"
@@ -56,13 +57,16 @@ def test_render_respects_char_budget(tmp_path, monkeypatch):
 
 
 def test_render_injected_count_matches_output(tmp_path):
-    hits = [(0.9, "a", _entry(tmp_path, "a")),
-            (sm.FLOOR - 0.05, "b", _entry(tmp_path, "b"))]
+    hits = [
+        (0.9, "a", _entry(tmp_path, "a")),
+        (sm.FLOOR - 0.05, "b", _entry(tmp_path, "b")),
+    ]
     out, injected = sm.render(hits)
     assert injected == 1 and "--- a" in out and "--- b" not in out
 
 
 # --- supersession filter ----------------------------------------------------
+
 
 def test_superseded_excluded(tmp_path):
     p = tmp_path / "old.md"
@@ -82,41 +86,60 @@ def test_unreadable_file_fails_closed(tmp_path):
 
 def test_superseded_with_inline_comment_still_excluded(tmp_path):
     p = tmp_path / "old.md"
-    p.write_text("---\nlifecycle: superseded  # retired 2024\n---\nbody",
-                 encoding="utf-8")
+    p.write_text(
+        "---\nlifecycle: superseded  # retired 2024\n---\nbody", encoding="utf-8"
+    )
     assert sm.is_superseded(str(p), "old") is True
 
 
 def test_prose_supersedes_mention_is_not_a_marker(tmp_path):
     p = tmp_path / "cur.md"
-    p.write_text("---\ndescription: supersedes the old one\n---\nbody", encoding="utf-8")
+    p.write_text(
+        "---\ndescription: supersedes the old one\n---\nbody", encoding="utf-8"
+    )
     assert sm.is_superseded(str(p), "cur") is False
 
 
 def test_top_k_prefilters_superseded(tmp_path):
     old = tmp_path / "old.md"
     old.write_text("---\nlifecycle: superseded\n---\nbody", encoding="utf-8")
-    idx = {"entries": {
-        "old": {"path": str(old), "mtime": 0.0, "vec": [1.0, 0.0]},
-        "cur": {"path": str(_entry(tmp_path, "cur")["path"]), "mtime": 0.0, "vec": [0.9, 0.1]},
-    }}
+    idx = {
+        "entries": {
+            "old": {"path": str(old), "mtime": 0.0, "vec": [1.0, 0.0]},
+            "cur": {
+                "path": str(_entry(tmp_path, "cur")["path"]),
+                "mtime": 0.0,
+                "vec": [0.9, 0.1],
+            },
+        }
+    }
     idx["entries"]["cur"]["path"] = str(tmp_path / "cur.md")
     got = [stem for _, stem, _ in sm.top_k(idx, [1.0, 0.0])]
     assert "old" not in got and "cur" in got
 
 
 def test_top_k_skips_dim_mismatch(tmp_path):
-    idx = {"entries": {"bad": {"path": str(_entry(tmp_path, "bad")["path"]),
-                               "mtime": 0.0, "vec": [1.0, 0.0, 0.0]}}}
+    idx = {
+        "entries": {
+            "bad": {
+                "path": str(_entry(tmp_path, "bad")["path"]),
+                "mtime": 0.0,
+                "vec": [1.0, 0.0, 0.0],
+            }
+        }
+    }
     assert sm.top_k(idx, [1.0, 0.0]) == []
 
 
 # --- index lifecycle --------------------------------------------------------
 
+
 def test_wrong_regime_index_rejected_wholesale(tmp_path, monkeypatch):
     idx_path = tmp_path / "index.json"
-    idx_path.write_text(json.dumps(
-        {"model": sm.MODEL, "regime": "raw-v0", "entries": {"a": {}}}), encoding="utf-8")
+    idx_path.write_text(
+        json.dumps({"model": sm.MODEL, "regime": "raw-v0", "entries": {"a": {}}}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(sm, "INDEX_PATH", str(idx_path))
     monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
     idx = sm.load_index()
@@ -130,7 +153,9 @@ def test_refresh_reembed_capped(tmp_path, monkeypatch):
         (mem / f"m{i}.md").write_text(f"body {i}", encoding="utf-8")
     monkeypatch.setattr(sm, "MEM_DIR", str(mem))
     calls = []
-    monkeypatch.setattr(sm, "embed", lambda text, timeout: (calls.append(1) or [1.0, 0.0]))
+    monkeypatch.setattr(
+        sm, "embed", lambda text, timeout: calls.append(1) or [1.0, 0.0]
+    )
     idx = {"model": sm.MODEL, "regime": sm.REGIME, "entries": {}}
     dirty = sm.refresh(idx, 1.0, max_reembeds=3)
     assert dirty and len(calls) == 3 and len(idx["entries"]) == 3
@@ -140,22 +165,33 @@ def test_refresh_drops_deleted(tmp_path, monkeypatch):
     mem = tmp_path / "mem"
     mem.mkdir()
     monkeypatch.setattr(sm, "MEM_DIR", str(mem))
-    idx = {"model": sm.MODEL, "regime": sm.REGIME,
-           "entries": {"gone": {"path": "/nope", "mtime": 0.0, "vec": [1.0]}}}
+    idx = {
+        "model": sm.MODEL,
+        "regime": sm.REGIME,
+        "entries": {"gone": {"path": "/nope", "mtime": 0.0, "vec": [1.0]}},
+    }
     assert sm.refresh(idx, 1.0, 3) is True
     assert idx["entries"] == {}
 
 
 # --- hook process contracts (subprocess, env-isolated) ----------------------
 
+
 def _run_hook(tmp_path, stdin: bytes):
-    env = dict(os.environ,
-               CLAUDE_MEMORY_DIR=str(tmp_path / "mem"),
-               SESSION_MEMORY_STATE=str(tmp_path / "state"),
-               OLLAMA_HOST="http://127.0.0.1:1")  # nothing listens
+    env = dict(
+        os.environ,
+        CLAUDE_MEMORY_DIR=str(tmp_path / "mem"),
+        SESSION_MEMORY_STATE=str(tmp_path / "state"),
+        OLLAMA_HOST="http://127.0.0.1:1",
+    )  # nothing listens
     (tmp_path / "mem").mkdir(exist_ok=True)
-    return subprocess.run([sys.executable, os.path.join(ROOT, "session_memory.py")],
-                          input=stdin, capture_output=True, env=env, timeout=30)
+    return subprocess.run(
+        [sys.executable, os.path.join(ROOT, "session_memory.py")],
+        input=stdin,
+        capture_output=True,
+        env=env,
+        timeout=30,
+    )
 
 
 def test_hook_fail_open_on_garbage_stdin(tmp_path):
@@ -168,19 +204,31 @@ def test_hook_fail_open_when_ollama_down(tmp_path):
     # ever dials Ollama and the test is vacuous (adversarial-review finding).
     mem = tmp_path / "mem"
     state = tmp_path / "state"
-    mem.mkdir(); state.mkdir()
+    mem.mkdir()
+    state.mkdir()
     doc = mem / "a.md"
     doc.write_text("body", encoding="utf-8")
-    (state / "index.json").write_text(json.dumps({
-        "model": sm.MODEL, "regime": sm.REGIME,
-        "entries": {"a": {"path": str(doc),
-                          "mtime": os.path.getmtime(doc),
-                          "vec": [1.0, 0.0]}}}), encoding="utf-8")
+    (state / "index.json").write_text(
+        json.dumps(
+            {
+                "model": sm.MODEL,
+                "regime": sm.REGIME,
+                "entries": {
+                    "a": {
+                        "path": str(doc),
+                        "mtime": os.path.getmtime(doc),
+                        "vec": [1.0, 0.0],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     payload = json.dumps({"prompt": "how should risky changes be rolled out"})
     r = _run_hook(tmp_path, payload.encode())
     assert r.returncode == 0 and r.stdout == b""
     # and it must have gotten far enough to log the query-embed failure
-    err = (state / "hook.err.log")
+    err = state / "hook.err.log"
     assert err.exists() and b"query embed failed" in err.read_bytes()
 
 
@@ -190,11 +238,17 @@ def test_hook_skips_short_prompts(tmp_path):
 
 
 def test_reindex_fails_loud_on_missing_dir(tmp_path):
-    env = dict(os.environ,
-               CLAUDE_MEMORY_DIR=str(tmp_path / "does-not-exist"),
-               SESSION_MEMORY_STATE=str(tmp_path / "state"))
-    r = subprocess.run([sys.executable, os.path.join(ROOT, "session_memory.py"),
-                        "--reindex"], capture_output=True, env=env, timeout=30)
+    env = dict(
+        os.environ,
+        CLAUDE_MEMORY_DIR=str(tmp_path / "does-not-exist"),
+        SESSION_MEMORY_STATE=str(tmp_path / "state"),
+    )
+    r = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "session_memory.py"), "--reindex"],
+        capture_output=True,
+        env=env,
+        timeout=30,
+    )
     assert r.returncode != 0  # CLI modes are NOT fail-open
 
 
@@ -204,6 +258,7 @@ def test_hook_skips_slash_commands(tmp_path):
 
 
 # --- eval harness math ------------------------------------------------------
+
 
 def test_corpus_hash_deterministic_and_sensitive(tmp_path):
     c1 = {"a": "one", "b": "two"}
@@ -216,9 +271,12 @@ def test_corpus_hash_deterministic_and_sensitive(tmp_path):
 
 def test_wrong_model_index_rejected(tmp_path, monkeypatch):
     idx_path = tmp_path / "index.json"
-    idx_path.write_text(json.dumps(
-        {"model": "some-other-model", "regime": sm.REGIME,
-         "entries": {"a": {}}}), encoding="utf-8")
+    idx_path.write_text(
+        json.dumps(
+            {"model": "some-other-model", "regime": sm.REGIME, "entries": {"a": {}}}
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(sm, "INDEX_PATH", str(idx_path))
     monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
     assert sm.load_index()["entries"] == {}
@@ -234,8 +292,12 @@ def test_render_header_count_matches_after_budget_drop(tmp_path, monkeypatch):
 
 
 def _write_manifest(dirpath, ts, corpus_hash, doc_hashes, r1, r3, mrr):
-    m = {"ts": ts, "corpus_hash": corpus_hash, "doc_hashes": doc_hashes,
-         "metrics": {"full": {"r1": r1, "r3": r3, "mrr": mrr}}}
+    m = {
+        "ts": ts,
+        "corpus_hash": corpus_hash,
+        "doc_hashes": doc_hashes,
+        "metrics": {"full": {"r1": r1, "r3": r3, "mrr": mrr}},
+    }
     with open(os.path.join(dirpath, f"manifest-{ts}.json"), "w") as f:
         json.dump(m, f)
 
@@ -258,9 +320,14 @@ def test_diff_changed_hash_flags_rebaseline_not_failure(tmp_path, monkeypatch, c
 
 def test_score_metrics_math(monkeypatch):
     # 3 docs on orthogonal axes; queries map deterministically.
-    vecs = {"d1": [1.0, 0.0, 0.0], "d2": [0.0, 1.0, 0.0], "d3": [0.0, 0.0, 1.0],
-            "q_d1": [1.0, 0.0, 0.0], "q_d2_near": [0.1, 0.99, 0.0],
-            "q_miss": [0.6, 0.55, 0.5]}
+    vecs = {
+        "d1": [1.0, 0.0, 0.0],
+        "d2": [0.0, 1.0, 0.0],
+        "d3": [0.0, 0.0, 1.0],
+        "q_d1": [1.0, 0.0, 0.0],
+        "q_d2_near": [0.1, 0.99, 0.0],
+        "q_miss": [0.6, 0.55, 0.5],
+    }
 
     def fake_embed(text, timeout):
         for key, v in vecs.items():
@@ -270,9 +337,11 @@ def test_score_metrics_math(monkeypatch):
 
     monkeypatch.setattr(er, "embed", fake_embed)
     corpus = {"d1": "d1", "d2": "d2", "d3": "d3"}
-    queries = [{"query": "q_d1", "gold": "d1"},
-               {"query": "q_d2_near", "gold": "d2"},
-               {"query": "q_miss", "gold": "d3", "adversarial": True}]
+    queries = [
+        {"query": "q_d1", "gold": "d1"},
+        {"query": "q_d2_near", "gold": "d2"},
+        {"query": "q_miss", "gold": "d3", "adversarial": True},
+    ]
     res = er.score(corpus, queries)
     assert res["full"]["n"] == 3
     assert res["standard"] == {"n": 2, "r1": 1.0, "r3": 1.0, "r5": 1.0, "mrr": 1.0}

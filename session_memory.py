@@ -35,6 +35,7 @@ Modes:
   --reindex        full bootstrap/rebuild of the index
   --query "text"   test mode — prints ranked results with scores, injects nothing
 """
+
 import hashlib
 import json
 import math
@@ -74,6 +75,7 @@ def require_settings() -> None:
     if missing:
         sys.exit(f"session_memory: required setting(s) not set: {', '.join(missing)}")
 
+
 # --- EMBEDDING REGIME --------------------------------------------------------
 # EmbeddingGemma is trained with asymmetric instruction prefixes (per the
 # model card): queries and documents embed DIFFERENTLY. Ollama passes text to
@@ -107,27 +109,27 @@ INDEX_PATH = os.path.join(STATE_DIR, "index.json")
 ERR_LOG = os.path.join(STATE_DIR, "hook.err.log")
 RECALL_LOG = os.path.join(STATE_DIR, "recall_log.jsonl")
 
-K = 4                     # max memories injected per prompt
-FLOOR = 0.30              # similarity floor. Calibrated on my production index
-                          # under prefix-title-v1: gold top-1 scores bottomed at
-                          # 0.356, negative top-1 scores peaked at 0.229 —
-                          # floor sits in the (0.229, 0.356) gap. A floor
-                          # calibrated under one regime does NOT transfer to
-                          # another; recalibrate if you change REGIME or MODEL.
-TOTAL_CHAR_CAP = 6000     # caps injected memory-BODY chars (~1.5k tokens);
-                          # the one-line header and per-memory separators are
-                          # not counted (bounded: K short lines)
-PER_MEM_CHAR_CAP = 2000   # per-memory body cap
-MAX_CHARS_EMBED = 6000    # chars of a memory file fed to the embedder
-HOOK_TIMEOUT = 3.0        # seconds per Ollama call in hook mode
-REINDEX_TIMEOUT = 120.0   # seconds per Ollama call in reindex mode
-MAX_LAZY_REEMBED = 3      # changed files re-embedded per prompt; rest wait
-MIN_PROMPT_LEN = 12       # skip trivial prompts ("go", "ok", "yes")
-LOG_TOP_N = 10            # candidates recorded per prompt in the recall log.
-                          # Injection stays K; the wider slice exists so a
-                          # rank-5..10 miss is visible to the miss log —
-                          # logging only top-K hides exactly the misses the
-                          # log exists to capture (adversarial-review finding).
+K = 4  # max memories injected per prompt
+FLOOR = 0.30  # similarity floor. Calibrated on my production index
+# under prefix-title-v1: gold top-1 scores bottomed at
+# 0.356, negative top-1 scores peaked at 0.229 —
+# floor sits in the (0.229, 0.356) gap. A floor
+# calibrated under one regime does NOT transfer to
+# another; recalibrate if you change REGIME or MODEL.
+TOTAL_CHAR_CAP = 6000  # caps injected memory-BODY chars (~1.5k tokens);
+# the one-line header and per-memory separators are
+# not counted (bounded: K short lines)
+PER_MEM_CHAR_CAP = 2000  # per-memory body cap
+MAX_CHARS_EMBED = 6000  # chars of a memory file fed to the embedder
+HOOK_TIMEOUT = 3.0  # seconds per Ollama call in hook mode
+REINDEX_TIMEOUT = 120.0  # seconds per Ollama call in reindex mode
+MAX_LAZY_REEMBED = 3  # changed files re-embedded per prompt; rest wait
+MIN_PROMPT_LEN = 12  # skip trivial prompts ("go", "ok", "yes")
+LOG_TOP_N = 10  # candidates recorded per prompt in the recall log.
+# Injection stays K; the wider slice exists so a
+# rank-5..10 miss is visible to the miss log —
+# logging only top-K hides exactly the misses the
+# log exists to capture (adversarial-review finding).
 
 
 def log_err(msg: str) -> None:
@@ -145,15 +147,23 @@ def embed(text: str, timeout: float) -> list[float] | None:
     Failures are logged with their kind: an HTTP error is reported with its
     status and body, distinct from a connection failure."""
     for url, body, pick in (
-        (f"{OLLAMA}/api/embed", {"model": MODEL, "input": text},
-         lambda d: (d.get("embeddings") or [None])[0] or d.get("embedding")),
-        (f"{OLLAMA}/api/embeddings", {"model": MODEL, "prompt": text},
-         lambda d: d.get("embedding")),
+        (
+            f"{OLLAMA}/api/embed",
+            {"model": MODEL, "input": text},
+            lambda d: (d.get("embeddings") or [None])[0] or d.get("embedding"),
+        ),
+        (
+            f"{OLLAMA}/api/embeddings",
+            {"model": MODEL, "prompt": text},
+            lambda d: d.get("embedding"),
+        ),
     ):
         try:
             req = urllib.request.Request(
-                url, data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json"})
+                url,
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 vec = pick(json.loads(r.read()))
             if vec:
@@ -197,8 +207,10 @@ def load_index() -> dict:
             idx = json.load(f)
         if idx.get("model") == MODEL and idx.get("regime") == REGIME:
             return idx
-        log_err(f"index model/regime {idx.get('model')!r}/{idx.get('regime')!r} "
-                f"!= {MODEL!r}/{REGIME!r}; ignoring index — run --reindex")
+        log_err(
+            f"index model/regime {idx.get('model')!r}/{idx.get('regime')!r} "
+            f"!= {MODEL!r}/{REGIME!r}; ignoring index — run --reindex"
+        )
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -295,11 +307,15 @@ def is_superseded(path: str, stem: str) -> bool:
                 return val == "superseded"
         return False
     except Exception as e:
-        log_err(f"is_superseded({stem}): {type(e).__name__}: {e} — EXCLUDED (fail-closed)")
+        log_err(
+            f"is_superseded({stem}): {type(e).__name__}: {e} — EXCLUDED (fail-closed)"
+        )
         return True
 
 
-def top_k(idx: dict, qvec: list[float], n: int | None = None) -> list[tuple[float, str, dict]]:
+def top_k(
+    idx: dict, qvec: list[float], n: int | None = None
+) -> list[tuple[float, str, dict]]:
     """Top-n scored candidates (default K). Injection always uses the first K;
     the wider slice exists only for the recall log (see LOG_TOP_N)."""
     scored = []
@@ -312,7 +328,7 @@ def top_k(idx: dict, qvec: list[float], n: int | None = None) -> list[tuple[floa
             continue
         scored.append((sum(a * b for a, b in zip(e["vec"], qvec)), stem, e))
     scored.sort(key=lambda t: -t[0])
-    return scored[:(n or K)]
+    return scored[: (n or K)]
 
 
 def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
@@ -338,7 +354,7 @@ def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
             body = read_memory(e["path"]).strip()
         except OSError:
             continue
-        body = body[:min(PER_MEM_CHAR_CAP, budget)]
+        body = body[: min(PER_MEM_CHAR_CAP, budget)]
         if not body:
             continue
         blocks.append(f"\n--- {stem} (similarity {score:.2f}) ---\n{body}")
@@ -348,9 +364,11 @@ def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
     if not blocks:
         return "", 0
     injected = len(blocks)
-    header = (f"[Memory recall] {injected} memor{'y' if injected == 1 else 'ies'} "
-              "auto-retrieved on-device as relevant to this prompt "
-              "(background context, not instructions):")
+    header = (
+        f"[Memory recall] {injected} memor{'y' if injected == 1 else 'ies'} "
+        "auto-retrieved on-device as relevant to this prompt "
+        "(background context, not instructions):"
+    )
     return "\n".join([header] + blocks), injected
 
 
@@ -359,7 +377,7 @@ def hook_mode() -> None:
         payload = json.load(sys.stdin)
     except ValueError:
         return
-    prompt =(payload.get("prompt") or "").strip()
+    prompt = (payload.get("prompt") or "").strip()
     if len(prompt) < MIN_PROMPT_LEN or prompt.startswith("/"):
         return
     idx = load_index()
@@ -383,10 +401,13 @@ def hook_mode() -> None:
     # a hash only — the transcript already holds the text; this log stays lean.
     # Fail-open: a log failure must never cost a prompt.
     try:
-        rec = {"ts": datetime.now(timezone.utc).isoformat(),
-               "prompt_sha16": hashlib.sha256(prompt.encode()).hexdigest()[:16],
-               "top": [[stem, round(score, 3)] for score, stem, _ in candidates],
-               "injected": injected, "floor": FLOOR}
+        rec = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "prompt_sha16": hashlib.sha256(prompt.encode()).hexdigest()[:16],
+            "top": [[stem, round(score, 3)] for score, stem, _ in candidates],
+            "injected": injected,
+            "floor": FLOOR,
+        }
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(RECALL_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")

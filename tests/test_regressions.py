@@ -12,8 +12,9 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "eval"))
-import eval_recall as er  # noqa: E402
-import session_memory as sm  # noqa: E402
+import eval_recall as er
+
+import session_memory as sm
 
 
 def _serve(routes):
@@ -54,12 +55,16 @@ def fake_ollama(tmp_path, monkeypatch):
 
 
 def test_embed_parses_api_embed(fake_ollama):
-    fake_ollama({"/api/embed": (200, json.dumps({"embeddings": [[0.5, 0.25]]}).encode())})
+    fake_ollama(
+        {"/api/embed": (200, json.dumps({"embeddings": [[0.5, 0.25]]}).encode())}
+    )
     assert sm.embed("hi", 5.0) == [0.5, 0.25]
 
 
 def test_embed_falls_back_to_legacy_endpoint(fake_ollama):
-    fake_ollama({"/api/embeddings": (200, json.dumps({"embedding": [1.0, 2.0]}).encode())})
+    fake_ollama(
+        {"/api/embeddings": (200, json.dumps({"embedding": [1.0, 2.0]}).encode())}
+    )
     assert sm.embed("hi", 5.0) == [1.0, 2.0]
 
 
@@ -112,7 +117,11 @@ def test_missing_required_settings_name_the_setting(monkeypatch):
 
 
 def test_cli_fails_when_settings_unset(tmp_path):
-    env = {k: v for k, v in os.environ.items() if k not in ("OLLAMA_HOST", "SESSION_MEMORY_MODEL")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("OLLAMA_HOST", "SESSION_MEMORY_MODEL")
+    }
     r = subprocess.run(
         [sys.executable, os.path.join(ROOT, "session_memory.py"), "--reindex"],
         capture_output=True,
@@ -125,7 +134,11 @@ def test_cli_fails_when_settings_unset(tmp_path):
 def test_diff_ignores_non_json_files(tmp_path, monkeypatch):
     monkeypatch.setattr(er, "MANIFEST_DIR", str(tmp_path))
     for ts, r1 in (("t1", 0.9), ("t2", 0.9)):
-        m = {"corpus_hash": "abc", "doc_hashes": {}, "metrics": {"full": {"r1": r1, "r3": 1, "mrr": 1}}}
+        m = {
+            "corpus_hash": "abc",
+            "doc_hashes": {},
+            "metrics": {"full": {"r1": r1, "r3": 1, "mrr": 1}},
+        }
         (tmp_path / f"manifest-{ts}.json").write_text(json.dumps(m))
     (tmp_path / "zzz-stray.txt").write_text("not json")
     assert er.diff_mode() == 0
@@ -139,7 +152,9 @@ def test_bad_bar_is_a_usage_error(tmp_path, monkeypatch):
     (c / "d1.md").write_text("one")
     monkeypatch.setattr(er, "embed", lambda text, timeout: [1.0, 0.0])
     monkeypatch.setattr(er, "MANIFEST_DIR", str(tmp_path / "m"))
-    monkeypatch.setattr(sys, "argv", ["x", "--corpus", str(c), "--queries", str(q), "--bar", "garbage"])
+    monkeypatch.setattr(
+        sys, "argv", ["x", "--corpus", str(c), "--queries", str(q), "--bar", "garbage"]
+    )
     with pytest.raises(SystemExit) as e:
         er.main()
     assert e.value.code == 2

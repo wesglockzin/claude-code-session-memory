@@ -31,6 +31,7 @@ Usage:
 
 Requires Ollama running with the `embeddinggemma` model pulled. Stdlib only.
 """
+
 import argparse
 import hashlib
 import json
@@ -39,8 +40,13 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from session_memory import (  # noqa: E402
-    MODEL, REGIME, QUERY_PREFIX, doc_prefix, embed, normed,
+from session_memory import (
+    MODEL,
+    QUERY_PREFIX,
+    REGIME,
+    doc_prefix,
+    embed,
+    normed,
 )
 
 MANIFEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifests")
@@ -58,9 +64,13 @@ def load_corpus(corpus_dir: str) -> dict[str, str]:
 
 
 def corpus_hashes(corpus: dict[str, str]) -> tuple[str, dict[str, str]]:
-    per_doc = {s: hashlib.sha256(t.encode()).hexdigest()[:16]
-               for s, t in sorted(corpus.items())}
-    whole = hashlib.sha256(json.dumps(per_doc, sort_keys=True).encode()).hexdigest()[:16]
+    per_doc = {
+        s: hashlib.sha256(t.encode()).hexdigest()[:16]
+        for s, t in sorted(corpus.items())
+    }
+    whole = hashlib.sha256(json.dumps(per_doc, sort_keys=True).encode()).hexdigest()[
+        :16
+    ]
     return whole, per_doc
 
 
@@ -90,12 +100,17 @@ def score(corpus: dict[str, str], queries: list[dict]) -> dict:
         n = len(pairs)
         if not n:
             return {}
+
         def r_at(k):
             return sum(1 for r, _ in pairs if r and r <= k) / n
 
-        return {"n": n, "r1": round(r_at(1), 3), "r3": round(r_at(3), 3),
-                "r5": round(r_at(5), 3),
-                "mrr": round(sum(1.0 / r for r, _ in pairs if r) / n, 3)}
+        return {
+            "n": n,
+            "r1": round(r_at(1), 3),
+            "r3": round(r_at(3), 3),
+            "r5": round(r_at(5), 3),
+            "mrr": round(sum(1.0 / r for r, _ in pairs if r) / n, 3),
+        }
 
     return {
         "full": metrics(ranks),
@@ -109,20 +124,22 @@ def write_manifest(result: dict, corpus: dict[str, str], args) -> str:
     whole, per_doc = corpus_hashes(corpus)
     manifest = {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "model": MODEL, "regime": REGIME,
+        "model": MODEL,
+        "regime": REGIME,
         # Repo-relative on purpose: manifests must not record absolute local
         # paths (they leak usernames/layout if a manifest is ever shared).
         "corpus_dir": os.path.relpath(args.corpus),
         "doc_count": len(corpus),
-        "corpus_hash": whole, "doc_hashes": per_doc,
+        "corpus_hash": whole,
+        "doc_hashes": per_doc,
         "queries": os.path.relpath(args.queries),
         "query_count": sum(len(v) for k, v in result.items() if k == "rows"),
         "metrics": {k: v for k, v in result.items() if k != "rows"},
     }
     os.makedirs(MANIFEST_DIR, exist_ok=True)
     path = os.path.join(
-        MANIFEST_DIR,
-        f"manifest-{manifest['ts'].replace(':', '').split('.')[0]}.json")
+        MANIFEST_DIR, f"manifest-{manifest['ts'].replace(':', '').split('.')[0]}.json"
+    )
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=1)
     return path
@@ -148,10 +165,15 @@ def diff_mode() -> int:
         return 1 if any(mb.get(k, 0) < ma.get(k, 0) for k in ("r1", "r3", "mrr")) else 0
     added = sorted(set(b["doc_hashes"]) - set(a["doc_hashes"]))
     removed = sorted(set(a["doc_hashes"]) - set(b["doc_hashes"]))
-    changed = sorted(s for s in set(a["doc_hashes"]) & set(b["doc_hashes"])
-                     if a["doc_hashes"][s] != b["doc_hashes"][s])
+    changed = sorted(
+        s
+        for s in set(a["doc_hashes"]) & set(b["doc_hashes"])
+        if a["doc_hashes"][s] != b["doc_hashes"][s]
+    )
     print("corpus hash CHANGED -> not like-for-like; FLAG FOR RE-BASELINE")
-    print(f"  added: {added or '-'}\n  removed: {removed or '-'}\n  changed: {changed or '-'}")
+    print(
+        f"  added: {added or '-'}\n  removed: {removed or '-'}\n  changed: {changed or '-'}"
+    )
     return 0
 
 
@@ -167,24 +189,32 @@ def main() -> int:
     corpus = load_corpus(args.corpus)
     with open(args.queries, encoding="utf-8") as qf:
         queries = [json.loads(line) for line in qf if line.strip()]
-    print(f"corpus: {len(corpus)} docs | queries: {len(queries)} | model: {MODEL} ({REGIME})")
+    print(
+        f"corpus: {len(corpus)} docs | queries: {len(queries)} | model: {MODEL} ({REGIME})"
+    )
     result = score(corpus, queries)
 
     for name in ("full", "standard", "adversarial"):
         m = result[name]
         if m:
-            print(f"  {name:<12} n={m['n']:>3}  R@1={m['r1']:.0%}  R@3={m['r3']:.0%}  "
-                  f"R@5={m['r5']:.0%}  MRR={m['mrr']:.3f}")
+            print(
+                f"  {name:<12} n={m['n']:>3}  R@1={m['r1']:.0%}  R@3={m['r3']:.0%}  "
+                f"R@5={m['r5']:.0%}  MRR={m['mrr']:.3f}"
+            )
     misses = [r for r in result["rows"] if r["rank"] is None or r["rank"] > 3]
     for r in misses:
-        print(f"  miss: rank={r['rank']} gold={r['gold']} q={r['query']!r} top3={r['top3']}")
+        print(
+            f"  miss: rank={r['rank']} gold={r['gold']} q={r['query']!r} top3={r['top3']}"
+        )
 
     path = write_manifest(result, corpus, args)
     print(f"manifest: {path}")
 
     if args.bar:
         try:
-            bar = {k: float(v) for k, v in (kv.split("=") for kv in args.bar.split(","))}
+            bar = {
+                k: float(v) for k, v in (kv.split("=") for kv in args.bar.split(","))
+            }
         except ValueError:
             p.error(f"--bar must look like r1=0.80,r3=0.93,mrr=0.87; got {args.bar!r}")
         full = result["full"]
