@@ -135,6 +135,8 @@ standard + 5 adversarial) ship in the repo:
 
 ```bash
 ollama pull embeddinggemma
+export OLLAMA_HOST=...                       # required
+export SESSION_MEMORY_MODEL=embeddinggemma   # required
 python3 eval/eval_recall.py --corpus demo-corpus --queries eval/queries.jsonl
 python3 eval/eval_recall.py diff        # after a second run: attribution
 ```
@@ -177,7 +179,9 @@ ones have no default; the tool exits at startup naming the one that is missing.
 
 The hook needs these in the environment Claude Code runs it in. The query and
 document prefixes are for EmbeddingGemma-style models, and the similarity floor
-was calibrated for that regime.
+was calibrated for that regime. The index records the exact model string, so
+changing it (even `embeddinggemma` to `embeddinggemma:latest`) discards the
+existing index until you run `session-memory --reindex`.
 
 Then register it in `~/.claude/settings.json`:
 

@@ -28,7 +28,9 @@ Usage:
       [--bar r1=0.80,r3=0.93,mrr=0.87]   # gate against a pre-committed floor
   eval/eval_recall.py diff               # attribute the last two manifests
 
-Requires Ollama running with the `embeddinggemma` model pulled. Stdlib only.
+Requires Ollama running with an embedding model pulled, and both OLLAMA_HOST
+and SESSION_MEMORY_MODEL exported (the run exits naming whichever is missing).
+Stdlib only.
 """
 
 import argparse
@@ -46,6 +48,7 @@ from session_memory import (
     doc_prefix,
     embed,
     normed,
+    require_settings,
 )
 
 MANIFEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifests")
@@ -184,6 +187,15 @@ def main() -> int:
     p.add_argument("--queries", default="eval/queries.jsonl")
     p.add_argument("--bar", help="pre-committed floor, e.g. r1=0.80,r3=0.93,mrr=0.87")
     args = p.parse_args()
+    require_settings()
+    bar = {}
+    if args.bar:
+        try:
+            bar = {
+                k: float(v) for k, v in (kv.split("=") for kv in args.bar.split(","))
+            }
+        except ValueError:
+            p.error(f"--bar must look like r1=0.80,r3=0.93,mrr=0.87; got {args.bar!r}")
 
     corpus = load_corpus(args.corpus)
     with open(args.queries, encoding="utf-8") as qf:
@@ -209,13 +221,7 @@ def main() -> int:
     path = write_manifest(result, corpus, args)
     print(f"manifest: {path}")
 
-    if args.bar:
-        try:
-            bar = {
-                k: float(v) for k, v in (kv.split("=") for kv in args.bar.split(","))
-            }
-        except ValueError:
-            p.error(f"--bar must look like r1=0.80,r3=0.93,mrr=0.87; got {args.bar!r}")
+    if bar:
         full = result["full"]
         fails = [k for k, v in bar.items() if full.get(k, 0) < v]
         if fails:

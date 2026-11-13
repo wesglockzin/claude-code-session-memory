@@ -159,3 +159,17 @@ def test_bad_bar_is_a_usage_error(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         er.main()
     assert e.value.code == 2
+    assert not (tmp_path / "m").exists()  # failed before embedding or manifest
+
+
+def test_eval_names_missing_settings_before_doing_anything(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "OLLAMA", "")
+    monkeypatch.setattr(sm, "MODEL", "")
+    called = []
+    monkeypatch.setattr(er, "embed", lambda text, timeout: called.append(1))
+    monkeypatch.setattr(er, "MANIFEST_DIR", str(tmp_path / "m"))
+    monkeypatch.setattr(sys, "argv", ["x"])
+    with pytest.raises(SystemExit) as e:
+        er.main()
+    assert "OLLAMA_HOST" in str(e.value) and "SESSION_MEMORY_MODEL" in str(e.value)
+    assert not called
