@@ -36,12 +36,14 @@ Stdlib only.
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from session_memory import (
+    LAST_EMBED,
     MODEL,
     QUERY_PREFIX,
     REGIME,
@@ -54,6 +56,12 @@ from session_memory import (
 MANIFEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manifests")
 EMBED_TIMEOUT = 120.0
 MAX_CHARS = 6000
+log = logging.getLogger("session_memory")
+
+
+def say(msg: str = "") -> None:
+    """The eval report is this script's output; diagnostics go through logging."""
+    sys.stdout.write(msg + "\n")
 
 
 def load_corpus(corpus_dir: str) -> dict[str, str]:
@@ -82,16 +90,15 @@ def score(corpus: dict[str, str], queries: list[dict]) -> dict:
     for i, s in enumerate(stems, 1):
         v = embed(doc_prefix(s) + corpus[s], EMBED_TIMEOUT)
         if v is None:
-            sys.exit(f"embed failed for corpus doc {s!r} — is Ollama up with {MODEL}?")
+            sys.exit(f"embed failed for corpus doc {s!r}: {LAST_EMBED['error']}")
         vecs[s] = normed(v)
-        print(f"\r  embedded {i}/{len(stems)}", end="", flush=True)
-    print()
+        log.info("embedded %d/%d", i, len(stems))
 
     rows, ranks = [], []
     for q in queries:
         qv = embed(QUERY_PREFIX + q["query"], EMBED_TIMEOUT)
         if qv is None:
-            sys.exit(f"embed failed for query {q['query']!r}")
+            sys.exit(f"embed failed for query {q['query']!r}: {LAST_EMBED['error']}")
         qv = normed(qv)
         order = sorted(stems, key=lambda s: -sum(a * b for a, b in zip(vecs[s], qv)))
         rank = order.index(q["gold"]) + 1 if q["gold"] in order else None
@@ -151,19 +158,19 @@ def diff_mode() -> int:
     names = os.listdir(MANIFEST_DIR) if os.path.isdir(MANIFEST_DIR) else []
     files = sorted(n for n in names if n.endswith(".json"))
     if len(files) < 2:
-        print("need at least two manifests to diff")
+        say("need at least two manifests to diff")
         return 0
     loaded = []
     for f in files[-2:]:
         with open(os.path.join(MANIFEST_DIR, f), encoding="utf-8") as fh:
             loaded.append(json.load(fh))
     a, b = loaded
-    print(f"comparing {files[-2]} -> {files[-1]}")
+    say(f"comparing {files[-2]} -> {files[-1]}")
     ma, mb = a["metrics"]["full"], b["metrics"]["full"]
     for k in ("r1", "r3", "mrr"):
-        print(f"  {k}: {ma.get(k)} -> {mb.get(k)}")
+        say(f"  {k}: {ma.get(k)} -> {mb.get(k)}")
     if a["corpus_hash"] == b["corpus_hash"]:
-        print("corpus hash IDENTICAL -> any metric change is a RETRIEVAL REGRESSION")
+        say("corpus hash IDENTICAL -> any metric change is a RETRIEVAL REGRESSION")
         return 1 if any(mb.get(k, 0) < ma.get(k, 0) for k in ("r1", "r3", "mrr")) else 0
     added = sorted(set(b["doc_hashes"]) - set(a["doc_hashes"]))
     removed = sorted(set(a["doc_hashes"]) - set(b["doc_hashes"]))
@@ -172,8 +179,8 @@ def diff_mode() -> int:
         for s in set(a["doc_hashes"]) & set(b["doc_hashes"])
         if a["doc_hashes"][s] != b["doc_hashes"][s]
     )
-    print("corpus hash CHANGED -> not like-for-like; FLAG FOR RE-BASELINE")
-    print(
+    say("corpus hash CHANGED -> not like-for-like; FLAG FOR RE-BASELINE")
+    say(
         f"  added: {added or '-'}\n  removed: {removed or '-'}\n  changed: {changed or '-'}"
     )
     return 0
@@ -188,6 +195,9 @@ def main() -> int:
     p.add_argument("--bar", help="pre-committed floor, e.g. r1=0.80,r3=0.93,mrr=0.87")
     args = p.parse_args()
     require_settings()
+    console = logging.StreamHandler(sys.stderr)
+    console.setFormatter(logging.Formatter("%(message)s"))
+    logging.getLogger("session_memory").addHandler(console)
     bar = {}
     if args.bar:
         try:
@@ -200,7 +210,7 @@ def main() -> int:
     corpus = load_corpus(args.corpus)
     with open(args.queries, encoding="utf-8") as qf:
         queries = [json.loads(line) for line in qf if line.strip()]
-    print(
+    say(
         f"corpus: {len(corpus)} docs | queries: {len(queries)} | model: {MODEL} ({REGIME})"
     )
     result = score(corpus, queries)
@@ -208,26 +218,26 @@ def main() -> int:
     for name in ("full", "standard", "adversarial"):
         m = result[name]
         if m:
-            print(
+            say(
                 f"  {name:<12} n={m['n']:>3}  R@1={m['r1']:.0%}  R@3={m['r3']:.0%}  "
                 f"R@5={m['r5']:.0%}  MRR={m['mrr']:.3f}"
             )
     misses = [r for r in result["rows"] if r["rank"] is None or r["rank"] > 3]
     for r in misses:
-        print(
+        say(
             f"  miss: rank={r['rank']} gold={r['gold']} q={r['query']!r} top3={r['top3']}"
         )
 
     path = write_manifest(result, corpus, args)
-    print(f"manifest: {path}")
+    say(f"manifest: {path}")
 
     if bar:
         full = result["full"]
         fails = [k for k, v in bar.items() if full.get(k, 0) < v]
         if fails:
-            print(f"BELOW BAR on {fails} (bar {bar}) — gate FAILS")
+            say(f"BELOW BAR on {fails} (bar {bar}) — gate FAILS")
             return 1
-        print(f"bar {bar} — PASS")
+        say(f"bar {bar} — PASS")
     return 0
 
 

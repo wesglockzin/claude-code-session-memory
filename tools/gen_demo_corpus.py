@@ -11,6 +11,7 @@ Usage:  python3 tools/gen_demo_corpus.py   (writes demo-corpus/ and
 
 import json
 import os
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "demo-corpus")
@@ -68,14 +69,14 @@ MEMORIES = {
             "January held for 40 minutes because nobody had timed the migration."
         ),
     ),
-    "reference_vpn_cert_bundle": (
+    "reference_release_tag_format": (
         "reference",
-        "Corporate VPN does TLS inspection; tools need the internal CA bundle",
+        "Release tags are vMAJOR.MINOR.PATCH and the changelog is generated from them",
         (
-            "The corporate VPN intercepts TLS. Python tools must set\n"
-            "REQUESTS_CA_BUNDLE to the internal bundle at ~/.corp-ca-bundle.pem\n"
-            "or requests fail with certificate errors that look like outages.\n"
-            "Node tools need NODE_EXTRA_CA_CERTS pointed at the same file."
+            "Releases are cut by pushing an annotated tag named vMAJOR.MINOR.PATCH,\n"
+            "for example v2.4.1. The changelog is generated from the commits\n"
+            "between two tags, so a tag with a different shape is skipped and\n"
+            "its changes vanish from the release notes."
         ),
     ),
     "reference_build_cache_flag": (
@@ -207,8 +208,8 @@ QUERY_SET = [
         False,
     ),
     (
-        "python requests certificate errors on the corporate network",
-        "reference_vpn_cert_bundle",
+        "what shape must a release tag have for the changelog",
+        "reference_release_tag_format",
         False,
     ),
     (
@@ -273,8 +274,8 @@ def main() -> None:
             json.dumps({"query": q, "gold": gold, "adversarial": adversarial}) + "\n"
             for q, gold, adversarial in QUERY_SET
         )
-    print(f"wrote {len(MEMORIES)} memories -> {CORPUS}")
-    print(f"wrote {len(QUERY_SET)} queries  -> {QUERIES}")
+    sys.stdout.write(f"wrote {len(MEMORIES)} memories -> {CORPUS}\n")
+    sys.stdout.write(f"wrote {len(QUERY_SET)} queries  -> {QUERIES}\n")
 
 
 if __name__ == "__main__":

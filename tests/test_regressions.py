@@ -1,5 +1,6 @@
 """Tests for embed() against a fake local HTTP server, and for fixed bugs."""
 
+import io
 import json
 import os
 import subprocess
@@ -130,6 +131,115 @@ def test_cli_fails_when_settings_unset(tmp_path):
         check=False,
     )
     assert r.returncode != 0 and b"OLLAMA_HOST" in r.stderr
+
+
+def _one_entry_index(tmp_path, monkeypatch):
+    mem = tmp_path / "a.md"
+    mem.write_text("body of a")
+    idx = {"entries": {"a": {"path": str(mem), "mtime": 0, "vec": [1.0, 0.0]}}}
+    monkeypatch.setattr(sm, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
+    monkeypatch.setattr(sm, "load_index", lambda: idx)
+    monkeypatch.setattr(sm, "refresh", lambda *a, **k: False)
+    monkeypatch.setattr(sm, "embed", lambda text, timeout: [1.0, 0.0])
+    return idx
+
+
+def test_recall_log_write_failure_is_logged_and_hook_still_succeeds(
+    tmp_path, monkeypatch, capsys
+):
+    _one_entry_index(tmp_path, monkeypatch)
+    log_dir = tmp_path / "recall"
+    log_dir.mkdir()  # opening a directory for append raises OSError
+    monkeypatch.setattr(sm, "RECALL_LOG", str(log_dir))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "x" * 20})))
+    sm.hook_mode()
+    assert "recall log write failed" in (tmp_path / "err.log").read_text()
+    assert "body of a" in capsys.readouterr().out
+
+
+def test_invalid_hook_payload_is_logged(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
+    sm.hook_mode()
+    assert "invalid payload" in (tmp_path / "err.log").read_text()
+
+
+def test_render_logs_unreadable_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
+    hit = (0.9, "gone", {"path": str(tmp_path / "missing.md")})
+    assert sm.render([hit]) == ("", 0)
+    assert "cannot read gone" in (tmp_path / "err.log").read_text()
+
+
+def test_refresh_logs_file_that_cannot_be_stat(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sm, "ERR_LOG", str(tmp_path / "err.log"))
+    monkeypatch.setattr(sm, "corpus_files", lambda: {"a": str(tmp_path / "nope.md")})
+    sm.refresh({"entries": {}}, 1.0, 3)
+    assert "cannot stat a" in (tmp_path / "err.log").read_text()
+
+
+def test_query_reports_http_status_not_ollama_down(fake_ollama, tmp_path, monkeypatch):
+    fake_ollama(
+        {
+            "/api/embed": (404, b"model not found"),
+            "/api/embeddings": (404, b"model not found"),
+        }
+    )
+    monkeypatch.setattr(
+        sm,
+        "load_index",
+        lambda: {"entries": {"a": {"path": "x", "mtime": 0, "vec": [1.0]}}},
+    )
+    monkeypatch.setattr(sm, "refresh", lambda *a, **k: False)
+    with pytest.raises(SystemExit) as e:
+        sm.main(["--query", "anything"])
+    msg = str(e.value)
+    assert "HTTP 404" in msg and "model not found" in msg
+    assert "Ollama up" not in msg
+
+
+def test_help_works_without_settings(monkeypatch, capsys):
+    monkeypatch.setattr(sm, "OLLAMA", "")
+    monkeypatch.setattr(sm, "MODEL", "")
+    with pytest.raises(SystemExit) as e:
+        sm.main(["--help"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "--reindex" in out and "--query" in out and "--install-hook" in out
+
+
+def test_install_hook_merges_and_is_idempotent(tmp_path):
+    path = tmp_path / "dir" / "settings.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"theme": "dark", "hooks": {"Stop": []}}))
+    assert sm.install_hook(str(path), "session-memory") is True
+    assert sm.install_hook(str(path), "session-memory") is False
+    data = json.loads(path.read_text())
+    assert data["theme"] == "dark" and data["hooks"]["Stop"] == []
+    groups = data["hooks"]["UserPromptSubmit"]
+    assert groups == [{"hooks": [{"type": "command", "command": "session-memory"}]}]
+
+
+def test_install_hook_creates_missing_settings_file(tmp_path, monkeypatch):
+    path = tmp_path / "new" / "settings.json"
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(path))
+    sm.main(["--install-hook"])
+    data = json.loads(path.read_text())
+    assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["type"] == "command"
+
+
+def test_install_hook_refuses_corrupt_settings(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    path.write_text("{not json")
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(path))
+    with pytest.raises(SystemExit) as e:
+        sm.main(["--install-hook"])
+    assert "install-hook failed" in str(e.value)
+    assert path.read_text() == "{not json"
 
 
 def test_diff_ignores_non_json_files(tmp_path, monkeypatch):

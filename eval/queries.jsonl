@@ -3,7 +3,7 @@
 {"query": "how do secrets get passed in provisioning scripts", "gold": "feedback_secrets_never_in_logs", "adversarial": false}
 {"query": "how big should a pull request be", "gold": "feedback_small_prs", "adversarial": false}
 {"query": "what do we do before running a schema migration", "gold": "feedback_tests_before_migrations", "adversarial": false}
-{"query": "python requests certificate errors on the corporate network", "gold": "reference_vpn_cert_bundle", "adversarial": false}
+{"query": "what shape must a release tag have for the changelog", "gold": "reference_release_tag_format", "adversarial": false}
 {"query": "CI build fails with linker errors that work locally", "gold": "reference_build_cache_flag", "adversarial": false}
 {"query": "who gets paged for a sev-1 and when does it escalate", "gold": "reference_oncall_escalation", "adversarial": false}
 {"query": "where do feature flags come from in local development", "gold": "reference_feature_flag_service", "adversarial": false}

@@ -8,6 +8,9 @@
 > your machine, which is the point — it was built for an environment where
 > the memory content cannot leave the host.
 
+Type: command-line tool (console script `session-memory`, also registered as a
+Claude Code `UserPromptSubmit` hook).
+
 I run this in production on every prompt of every Claude Code session, over a
 memory corpus of ~140 files. This repo is the same code with paths made
 configurable and the eval harness included, plus a synthetic demo corpus so
@@ -176,6 +179,12 @@ ones have no default; the tool exits at startup naming the one that is missing.
 | `CLAUDE_MEMORY_DIR` | no | `~/.claude/memory` | directory of `*.md` memory files |
 | `SESSION_MEMORY_STATE` | no | `~/.claude/session-memory` | index and logs |
 | `SESSION_MEMORY_EXCLUDE` | no | `MEMORY.md` | comma-separated basenames to skip |
+| `CLAUDE_SETTINGS_PATH` | no | `~/.claude/settings.json` | file `--install-hook` edits |
+
+Logging: in hook mode stdout is what Claude Code injects, so errors go to
+`hook.err.log` in the state directory. The operator modes (`--reindex`,
+`--query`, `--install-hook`, the eval script) log progress and failures to
+stderr as well. An HTTP error from Ollama is reported with its status and body.
 
 The hook needs these in the environment Claude Code runs it in. The query and
 document prefixes are for EmbeddingGemma-style models, and the similarity floor
@@ -183,7 +192,16 @@ was calibrated for that regime. The index records the exact model string, so
 changing it (even `embeddinggemma` to `embeddinggemma:latest`) discards the
 existing index until you run `session-memory --reindex`.
 
-Then register it in `~/.claude/settings.json`:
+Then register the hook with one command:
+
+```bash
+session-memory --install-hook
+```
+
+It merges a `UserPromptSubmit` entry into `~/.claude/settings.json` (or the
+file named by `CLAUDE_SETTINGS_PATH`), keeps your other settings, and does
+nothing if the entry is already there. `session-memory --help` lists all modes.
+The entry it writes is:
 
 ```json
 {
