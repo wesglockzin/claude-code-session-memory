@@ -51,7 +51,7 @@ def test_render_caps_at_k_even_with_wider_slice(tmp_path):
 def test_render_respects_char_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(sm, "TOTAL_CHAR_CAP", 50)
     hits = [(0.9, f"m{i}", _entry(tmp_path, f"m{i}", body="x" * 40)) for i in range(4)]
-    out, injected = sm.render(hits)
+    _, injected = sm.render(hits)
     assert injected < 4  # budget cut it off
     assert injected >= 1
 
@@ -191,6 +191,7 @@ def _run_hook(tmp_path, stdin: bytes):
         capture_output=True,
         env=env,
         timeout=30,
+        check=False,
     )
 
 
@@ -248,6 +249,7 @@ def test_reindex_fails_loud_on_missing_dir(tmp_path):
         capture_output=True,
         env=env,
         timeout=30,
+        check=False,
     )
     assert r.returncode != 0  # CLI modes are NOT fail-open
 

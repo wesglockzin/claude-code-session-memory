@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 eval_recall.py — measure retrieval quality and attribute any change to a cause.
 

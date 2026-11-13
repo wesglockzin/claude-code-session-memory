@@ -127,6 +127,7 @@ def test_cli_fails_when_settings_unset(tmp_path):
         capture_output=True,
         env=env,
         timeout=30,
+        check=False,
     )
     assert r.returncode != 0 and b"OLLAMA_HOST" in r.stderr
 

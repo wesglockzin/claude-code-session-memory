@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 session_memory.py — local RAG memory recall for Claude Code.
 
@@ -52,7 +51,7 @@ from datetime import datetime, timezone
 # from "no relevant memory found." macOS still ships /usr/bin/python3 as 3.9,
 # so a PATH shift alone could silently kill recall. Fail CLOSED and LOUD here
 # instead: this is the one failure mode that must never be quiet.
-if sys.version_info < (3, 10):
+if sys.version_info < (3, 10):  # noqa: UP036 - hook must fail loud on an old interpreter
     sys.stderr.write(
         "session_memory: FATAL — needs Python >= 3.10; "
         f"got {sys.version.split()[0]} at {sys.executable}. "
@@ -96,11 +95,11 @@ def doc_prefix(stem: str) -> str:
 
 
 MEM_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEMORY_DIR", "~/.claude/memory"))
-EXCLUDE = set(
+EXCLUDE = {
     s.strip()
     for s in os.environ.get("SESSION_MEMORY_EXCLUDE", "MEMORY.md").split(",")
     if s.strip()
-)
+}
 
 STATE_DIR = os.path.expanduser(
     os.environ.get("SESSION_MEMORY_STATE", "~/.claude/session-memory")
@@ -213,8 +212,8 @@ def load_index() -> dict:
         )
     except FileNotFoundError:
         pass
-    except Exception as e:
-        log_err(f"load_index: {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 - fail-open: a corrupt index is logged and rebuilt
+        log_err(f"load_index:{type(e).__name__}: {e}")
     return {"model": MODEL, "regime": REGIME, "entries": {}}
 
 
@@ -306,7 +305,7 @@ def is_superseded(path: str, stem: str) -> bool:
                 val = val.split("#", 1)[0].strip().strip('"').strip("'")
                 return val == "superseded"
         return False
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - logged, and the file is excluded (fail-closed)
         log_err(
             f"is_superseded({stem}): {type(e).__name__}: {e} — EXCLUDED (fail-closed)"
         )
@@ -387,7 +386,7 @@ def hook_mode() -> None:
     try:
         if refresh(idx, HOOK_TIMEOUT, MAX_LAZY_REEMBED):
             save_index(idx)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - fail-open hook boundary; error is logged
         log_err(f"hook refresh: {type(e).__name__}: {e}")
     qvec = embed(QUERY_PREFIX + prompt[:2000], HOOK_TIMEOUT)
     if qvec is None:
