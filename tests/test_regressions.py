@@ -224,6 +224,35 @@ def test_install_hook_merges_and_is_idempotent(tmp_path):
     assert groups == [{"hooks": [{"type": "command", "command": "session-memory"}]}]
 
 
+def test_unparseable_existing_hook_command_is_logged(caplog):
+    with caplog.at_level("WARNING", logger="session_memory"):
+        assert sm._is_session_memory_cmd('session-memory "unbalanced') is False
+    assert "cannot parse existing hook command" in caplog.text
+
+
+def test_reindex_exit_message_keeps_first_error(tmp_path, monkeypatch):
+    files = {}
+    for name in ("a", "b"):
+        p = tmp_path / f"{name}.md"
+        p.write_text("x")
+        files[name] = str(p)
+    monkeypatch.setattr(sm, "corpus_files", lambda: files)
+    monkeypatch.setattr(sm, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(sm, "INDEX_PATH", str(tmp_path / "state" / "index.json"))
+
+    def fake_embed_entry(path, stem, mtime, timeout):
+        if stem == "a":
+            sm.LAST_EMBED["error"] = "HTTP 404 model not found"
+            return None
+        sm.LAST_EMBED["error"] = ""  # a later success clears the state
+        return {"mtime": mtime, "vec": [1.0]}
+
+    monkeypatch.setattr(sm, "embed_entry", fake_embed_entry)
+    with pytest.raises(SystemExit) as e:
+        sm.reindex()
+    assert "HTTP 404 model not found" in str(e.value)
+
+
 def test_install_hook_creates_missing_settings_file(tmp_path, monkeypatch):
     path = tmp_path / "new" / "settings.json"
     monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(path))

@@ -504,7 +504,10 @@ def _is_session_memory_cmd(command: str) -> bool:
     """True for `session-memory` or any path to it (e.g. a venv's bin/)."""
     try:
         parts = shlex.split(command)
-    except ValueError:
+    except ValueError as e:
+        logger.warning(
+            "install-hook: cannot parse existing hook command %r: %s", command, e
+        )
         return False
     return len(parts) == 1 and os.path.basename(parts[0]) == "session-memory"
 
