@@ -8,18 +8,40 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: compile
-        run: python -m py_compile session_memory.py eval/eval_recall.py tools/gen_demo_corpus.py tests/test_session_memory.py
+          python-version: ${{ matrix.python-version }}
+      - name: install
+        run: pip install -e ".[dev]"
+      - name: lint
+        run: ruff check .
+      - name: format check
+        run: ruff format --check .
+      - name: dependency check
+        run: deptry .
       - name: demo corpus is in sync with its generator
         run: |
           python tools/gen_demo_corpus.py
           git diff --exit-code -- demo-corpus eval/queries.jsonl
-      - name: tests (embedder stubbed — no Ollama in CI)
-        run: |
-          pip install pytest
-          python -m pytest -q
+      - name: tests (embedder stubbed, no Ollama in CI)
+        run: python -m pytest -q
+      - name: audit project dependencies
+        run: pip install pip-audit && pip-audit .
+      - name: lockfile is current
+        run: pip install uv && uv lock --check
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

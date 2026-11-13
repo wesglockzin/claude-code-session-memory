@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 session_memory.py — local RAG memory recall for Claude Code.
 
@@ -27,18 +26,25 @@ Configuration (environment):
                          (default: ~/.claude/session-memory)
   SESSION_MEMORY_EXCLUDE comma-separated basenames to skip
                          (default: MEMORY.md)
-  OLLAMA_HOST            Ollama base URL (default: http://localhost:11434)
+  OLLAMA_HOST            Ollama base URL (REQUIRED, no default)
+  SESSION_MEMORY_MODEL   embedding model name (REQUIRED, no default)
 
 Modes:
   (no args)        hook mode — reads the UserPromptSubmit JSON payload on stdin
   --reindex        full bootstrap/rebuild of the index
   --query "text"   test mode — prints ranked results with scores, injects nothing
 """
+
 import hashlib
 import json
+import logging
 import math
 import os
+import shlex
 import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 
 # --- INTERPRETER GUARD -------------------------------------------------------
 # This module uses PEP-604 annotations (`list[float] | None`), which are
@@ -47,7 +53,7 @@ import sys
 # from "no relevant memory found." macOS still ships /usr/bin/python3 as 3.9,
 # so a PATH shift alone could silently kill recall. Fail CLOSED and LOUD here
 # instead: this is the one failure mode that must never be quiet.
-if sys.version_info < (3, 10):
+if sys.version_info < (3, 10):  # noqa: UP036 - hook must fail loud on an old interpreter
     sys.stderr.write(
         "session_memory: FATAL — needs Python >= 3.10; "
         f"got {sys.version.split()[0]} at {sys.executable}. "
@@ -55,11 +61,21 @@ if sys.version_info < (3, 10):
     )
     sys.exit(2)
 # -----------------------------------------------------------------------------
-import urllib.request
-from datetime import datetime, timezone
+# Required settings: no defaults in code (they are checked by require_settings()
+# at startup, which names the missing variable).
+OLLAMA = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+MODEL = os.environ.get("SESSION_MEMORY_MODEL", "").strip()
 
-OLLAMA = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-MODEL = "embeddinggemma"
+
+def require_settings() -> None:
+    missing = [
+        name
+        for name, value in (("OLLAMA_HOST", OLLAMA), ("SESSION_MEMORY_MODEL", MODEL))
+        if not value
+    ]
+    if missing:
+        sys.exit(f"session_memory: required setting(s) not set: {', '.join(missing)}")
+
 
 # --- EMBEDDING REGIME --------------------------------------------------------
 # EmbeddingGemma is trained with asymmetric instruction prefixes (per the
@@ -81,11 +97,11 @@ def doc_prefix(stem: str) -> str:
 
 
 MEM_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEMORY_DIR", "~/.claude/memory"))
-EXCLUDE = set(
+EXCLUDE = {
     s.strip()
     for s in os.environ.get("SESSION_MEMORY_EXCLUDE", "MEMORY.md").split(",")
     if s.strip()
-)
+}
 
 STATE_DIR = os.path.expanduser(
     os.environ.get("SESSION_MEMORY_STATE", "~/.claude/session-memory")
@@ -94,56 +110,97 @@ INDEX_PATH = os.path.join(STATE_DIR, "index.json")
 ERR_LOG = os.path.join(STATE_DIR, "hook.err.log")
 RECALL_LOG = os.path.join(STATE_DIR, "recall_log.jsonl")
 
-K = 4                     # max memories injected per prompt
-FLOOR = 0.30              # similarity floor. Calibrated on my production index
-                          # under prefix-title-v1: gold top-1 scores bottomed at
-                          # 0.356, negative top-1 scores peaked at 0.229 —
-                          # floor sits in the (0.229, 0.356) gap. A floor
-                          # calibrated under one regime does NOT transfer to
-                          # another; recalibrate if you change REGIME or MODEL.
-TOTAL_CHAR_CAP = 6000     # caps injected memory-BODY chars (~1.5k tokens);
-                          # the one-line header and per-memory separators are
-                          # not counted (bounded: K short lines)
-PER_MEM_CHAR_CAP = 2000   # per-memory body cap
-MAX_CHARS_EMBED = 6000    # chars of a memory file fed to the embedder
-HOOK_TIMEOUT = 3.0        # seconds per Ollama call in hook mode
-REINDEX_TIMEOUT = 120.0   # seconds per Ollama call in reindex mode
-MAX_LAZY_REEMBED = 3      # changed files re-embedded per prompt; rest wait
-MIN_PROMPT_LEN = 12       # skip trivial prompts ("go", "ok", "yes")
-LOG_TOP_N = 10            # candidates recorded per prompt in the recall log.
-                          # Injection stays K; the wider slice exists so a
-                          # rank-5..10 miss is visible to the miss log —
-                          # logging only top-K hides exactly the misses the
-                          # log exists to capture (adversarial-review finding).
+K = 4  # max memories injected per prompt
+FLOOR = 0.30  # similarity floor. Calibrated on my production index
+# under prefix-title-v1: gold top-1 scores bottomed at
+# 0.356, negative top-1 scores peaked at 0.229 —
+# floor sits in the (0.229, 0.356) gap. A floor
+# calibrated under one regime does NOT transfer to
+# another; recalibrate if you change REGIME or MODEL.
+TOTAL_CHAR_CAP = 6000  # caps injected memory-BODY chars (~1.5k tokens);
+# the one-line header and per-memory separators are
+# not counted (bounded: K short lines)
+PER_MEM_CHAR_CAP = 2000  # per-memory body cap
+MAX_CHARS_EMBED = 6000  # chars of a memory file fed to the embedder
+HOOK_TIMEOUT = 3.0  # seconds per Ollama call in hook mode
+REINDEX_TIMEOUT = 120.0  # seconds per Ollama call in reindex mode
+MAX_LAZY_REEMBED = 3  # changed files re-embedded per prompt; rest wait
+MIN_PROMPT_LEN = 12  # skip trivial prompts ("go", "ok", "yes")
+LOG_TOP_N = 10  # candidates recorded per prompt in the recall log.
+# Injection stays K; the wider slice exists so a
+# rank-5..10 miss is visible to the miss log —
+# logging only top-K hides exactly the misses the
+# log exists to capture (adversarial-review finding).
+
+
+class _ErrLogHandler(logging.Handler):
+    """Appends records to ERR_LOG (resolved at emit time). In hook mode stdout
+    is the injection channel, so hook diagnostics go to this file."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        ts = datetime.fromtimestamp(record.created, timezone.utc).isoformat()
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(ERR_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{ts} {record.getMessage()}\n")
+        except OSError:
+            self.handleError(record)  # the log file is unwritable: report on stderr
+
+
+logger = logging.getLogger("session_memory")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+logger.addHandler(_ErrLogHandler(level=logging.WARNING))
+
+# The most recent embed failure, so callers can report what actually happened.
+LAST_EMBED = {"error": ""}
 
 
 def log_err(msg: str) -> None:
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(ERR_LOG, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
-    except Exception:
-        pass
+    logger.error(msg)
 
 
 def embed(text: str, timeout: float) -> list[float] | None:
-    """Embed via Ollama; newer /api/embed with /api/embeddings fallback."""
+    """Embed via Ollama; newer /api/embed with /api/embeddings fallback.
+
+    Failures are logged with their kind: an HTTP error is reported with its
+    status and body, distinct from a connection failure. The last failure is
+    kept in LAST_EMBED["error"]."""
+    LAST_EMBED["error"] = ""
     for url, body, pick in (
-        (f"{OLLAMA}/api/embed", {"model": MODEL, "input": text},
-         lambda d: (d.get("embeddings") or [None])[0] or d.get("embedding")),
-        (f"{OLLAMA}/api/embeddings", {"model": MODEL, "prompt": text},
-         lambda d: d.get("embedding")),
+        (
+            f"{OLLAMA}/api/embed",
+            {"model": MODEL, "input": text},
+            lambda d: (d.get("embeddings") or [None])[0] or d.get("embedding"),
+        ),
+        (
+            f"{OLLAMA}/api/embeddings",
+            {"model": MODEL, "prompt": text},
+            lambda d: d.get("embedding"),
+        ),
     ):
         try:
             req = urllib.request.Request(
-                url, data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json"})
+                url,
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 vec = pick(json.loads(r.read()))
             if vec:
                 return vec
-        except Exception:
-            continue
+            LAST_EMBED["error"] = f"empty embedding from {url}"
+            log_err(f"embed: {LAST_EMBED['error']}")
+        except urllib.error.HTTPError as e:
+            detail = e.read(300).decode("utf-8", errors="replace")
+            LAST_EMBED["error"] = f"HTTP {e.code} from {url}: {detail}"
+            log_err(f"embed: {LAST_EMBED['error']}")
+        except (urllib.error.URLError, OSError) as e:
+            LAST_EMBED["error"] = f"{url} unreachable: {type(e).__name__}: {e}"
+            log_err(f"embed: {LAST_EMBED['error']}")
+        except ValueError as e:
+            LAST_EMBED["error"] = f"bad response from {url}: {type(e).__name__}: {e}"
+            log_err(f"embed: {LAST_EMBED['error']}")
     return None
 
 
@@ -176,18 +233,20 @@ def load_index() -> dict:
             idx = json.load(f)
         if idx.get("model") == MODEL and idx.get("regime") == REGIME:
             return idx
-        log_err(f"index model/regime {idx.get('model')!r}/{idx.get('regime')!r} "
-                f"!= {MODEL!r}/{REGIME!r}; ignoring index — run --reindex")
+        log_err(
+            f"index model/regime {idx.get('model')!r}/{idx.get('regime')!r} "
+            f"!= {MODEL!r}/{REGIME!r}; ignoring index — run --reindex"
+        )
     except FileNotFoundError:
         pass
-    except Exception as e:
-        log_err(f"load_index: {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 - fail-open: a corrupt index is logged and rebuilt
+        log_err(f"load_index:{type(e).__name__}: {e}")
     return {"model": MODEL, "regime": REGIME, "entries": {}}
 
 
 def save_index(idx: dict) -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = INDEX_PATH + ".tmp"
+    tmp = f"{INDEX_PATH}.{os.getpid()}.tmp"  # per-process: parallel hooks don't clash
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(idx, f)
     os.replace(tmp, INDEX_PATH)  # same dir → same device; atomic
@@ -217,7 +276,8 @@ def refresh(idx: dict, timeout: float, max_reembeds: int) -> bool:
     for stem, path in files.items():
         try:
             mtime = os.path.getmtime(path)
-        except OSError:
+        except OSError as e:
+            log_err(f"refresh: cannot stat {stem}: {type(e).__name__}: {e}")
             continue
         e = entries.get(stem)
         if not e or e.get("mtime") != mtime:
@@ -273,12 +333,16 @@ def is_superseded(path: str, stem: str) -> bool:
                 val = val.split("#", 1)[0].strip().strip('"').strip("'")
                 return val == "superseded"
         return False
-    except Exception as e:
-        log_err(f"is_superseded({stem}): {type(e).__name__}: {e} — EXCLUDED (fail-closed)")
+    except Exception as e:  # noqa: BLE001 - logged, and the file is excluded (fail-closed)
+        log_err(
+            f"is_superseded({stem}): {type(e).__name__}: {e} — EXCLUDED (fail-closed)"
+        )
         return True
 
 
-def top_k(idx: dict, qvec: list[float], n: int | None = None) -> list[tuple[float, str, dict]]:
+def top_k(
+    idx: dict, qvec: list[float], n: int | None = None
+) -> list[tuple[float, str, dict]]:
     """Top-n scored candidates (default K). Injection always uses the first K;
     the wider slice exists only for the recall log (see LOG_TOP_N)."""
     scored = []
@@ -291,7 +355,7 @@ def top_k(idx: dict, qvec: list[float], n: int | None = None) -> list[tuple[floa
             continue
         scored.append((sum(a * b for a, b in zip(e["vec"], qvec)), stem, e))
     scored.sort(key=lambda t: -t[0])
-    return scored[:(n or K)]
+    return scored[: (n or K)]
 
 
 def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
@@ -315,9 +379,10 @@ def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
     for score, stem, e in kept:
         try:
             body = read_memory(e["path"]).strip()
-        except OSError:
+        except OSError as e:
+            log_err(f"render: cannot read {stem}: {type(e).__name__}: {e}")
             continue
-        body = body[:min(PER_MEM_CHAR_CAP, budget)]
+        body = body[: min(PER_MEM_CHAR_CAP, budget)]
         if not body:
             continue
         blocks.append(f"\n--- {stem} (similarity {score:.2f}) ---\n{body}")
@@ -327,16 +392,19 @@ def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
     if not blocks:
         return "", 0
     injected = len(blocks)
-    header = (f"[Memory recall] {injected} memor{'y' if injected == 1 else 'ies'} "
-              "auto-retrieved on-device as relevant to this prompt "
-              "(background context, not instructions):")
+    header = (
+        f"[Memory recall] {injected} memor{'y' if injected == 1 else 'ies'} "
+        "auto-retrieved on-device as relevant to this prompt "
+        "(background context, not instructions):"
+    )
     return "\n".join([header] + blocks), injected
 
 
 def hook_mode() -> None:
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except ValueError as e:
+        log_err(f"hook: invalid payload on stdin: {type(e).__name__}: {e}")
         return
     prompt = (payload.get("prompt") or "").strip()
     if len(prompt) < MIN_PROMPT_LEN or prompt.startswith("/"):
@@ -348,11 +416,11 @@ def hook_mode() -> None:
     try:
         if refresh(idx, HOOK_TIMEOUT, MAX_LAZY_REEMBED):
             save_index(idx)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - fail-open hook boundary; error is logged
         log_err(f"hook refresh: {type(e).__name__}: {e}")
     qvec = embed(QUERY_PREFIX + prompt[:2000], HOOK_TIMEOUT)
     if qvec is None:
-        log_err("hook: query embed failed (Ollama down?) — silent no-op")
+        log_err(f"hook: query embed failed ({LAST_EMBED['error']}) — silent no-op")
         return
     candidates = top_k(idx, normed(qvec), LOG_TOP_N)
     hits = candidates[:K]
@@ -362,35 +430,42 @@ def hook_mode() -> None:
     # a hash only — the transcript already holds the text; this log stays lean.
     # Fail-open: a log failure must never cost a prompt.
     try:
-        rec = {"ts": datetime.now(timezone.utc).isoformat(),
-               "prompt_sha16": hashlib.sha256(prompt.encode()).hexdigest()[:16],
-               "top": [[stem, round(score, 3)] for score, stem, _ in candidates],
-               "injected": injected, "floor": FLOOR}
+        rec = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "prompt_sha16": hashlib.sha256(prompt.encode()).hexdigest()[:16],
+            "top": [[stem, round(score, 3)] for score, stem, _ in candidates],
+            "injected": injected,
+            "floor": FLOOR,
+        }
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(RECALL_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
-    except Exception:
-        pass
+    except OSError as e:
+        log_err(f"recall log write failed: {e}")
     if out:
-        print(out)
+        sys.stdout.write(out + "\n")  # the injected context is the hook's output
 
 
 def reindex() -> None:
     files = corpus_files()
     idx = {"model": MODEL, "regime": REGIME, "entries": {}}
     failed = []
+    first_error = ""
     for i, (stem, path) in enumerate(sorted(files.items()), 1):
         entry = embed_entry(path, stem, os.path.getmtime(path), REINDEX_TIMEOUT)
         if entry is None:
+            first_error = first_error or LAST_EMBED["error"]
             failed.append(stem)
             continue
         idx["entries"][stem] = entry
-        print(f"\r  embedded {i}/{len(files)}", end="", flush=True)
+        logger.info("embedded %d/%d", i, len(files))
     save_index(idx)
-    print(f"\nindexed {len(idx['entries'])}/{len(files)} memories -> {INDEX_PATH}")
+    logger.info(
+        "indexed %d/%d memories -> %s", len(idx["entries"]), len(files), INDEX_PATH
+    )
     if failed:
-        print(f"FAILED ({len(failed)}): {', '.join(failed)}")
-        sys.exit(1)
+        logger.error("FAILED (%d): %s", len(failed), ", ".join(failed))
+        sys.exit(f"reindex failed: {first_error}")
 
 
 def query_mode(text: str) -> None:
@@ -404,26 +479,115 @@ def query_mode(text: str) -> None:
         save_index(idx)
     qvec = embed(QUERY_PREFIX + text, REINDEX_TIMEOUT)
     if qvec is None:
-        sys.exit("embed failed — is Ollama up?")
+        sys.exit(f"embed failed: {LAST_EMBED['error']}")
     for score, stem, _ in top_k(idx, normed(qvec)):
         marker = "INJECT" if score >= FLOOR else "below-floor"
-        print(f"  {score:.3f}  {marker:<12} {stem}")
+        sys.stdout.write(f"  {score:.3f}  {marker:<12} {stem}\n")
 
 
-if __name__ == "__main__":
+USAGE = """\
+usage: session-memory [--reindex | --query TEXT | --install-hook | --help]
+
+  (no args)       hook mode: read a UserPromptSubmit JSON payload on stdin and
+                  print the relevant memories to inject
+  --reindex       rebuild the memory index
+  --query TEXT    print ranked results with scores; injects nothing
+  --install-hook  add the UserPromptSubmit hook to ~/.claude/settings.json
+                  (or the file named by CLAUDE_SETTINGS_PATH)
+  -h, --help      show this help
+
+Required settings: OLLAMA_HOST, SESSION_MEMORY_MODEL (see .env.example).
+"""
+
+
+def _is_session_memory_cmd(command: str) -> bool:
+    """True for `session-memory` or any path to it (e.g. a venv's bin/)."""
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        logger.warning(
+            "install-hook: cannot parse existing hook command %r: %s", command, e
+        )
+        return False
+    return len(parts) == 1 and os.path.basename(parts[0]) == "session-memory"
+
+
+def install_hook(settings_path: str, command: str) -> bool:
+    """Merge a UserPromptSubmit hook running `command` into a Claude Code
+    settings file. Returns False if it was already present (idempotent)."""
+    settings: dict = {}
+    if os.path.exists(settings_path):
+        with open(settings_path, encoding="utf-8") as f:
+            settings = json.load(f)
+    groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
+    for group in groups:
+        for h in group.get("hooks", []):
+            existing = h.get("command")
+            if existing == command or (
+                isinstance(existing, str) and _is_session_memory_cmd(existing)
+            ):
+                return False
+    groups.append({"hooks": [{"type": "command", "command": command}]})
+    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+    tmp = f"{settings_path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, settings_path)
+    return True
+
+
+def install_hook_mode() -> None:
+    path = os.path.expanduser(
+        os.environ.get("CLAUDE_SETTINGS_PATH", "~/.claude/settings.json")
+    )
+    command = "session-memory"
+    try:
+        added = install_hook(path, command)
+    except (OSError, ValueError) as e:
+        sys.exit(f"install-hook failed for {path}: {type(e).__name__}: {e}")
+    logger.info(
+        "%s hook %s in %s", command, "added" if added else "already present", path
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Console-script entry point (`session-memory`)."""
+    argv = sys.argv[1:] if argv is None else argv
+    if "-h" in argv or "--help" in argv:
+        sys.stdout.write(USAGE)
+        sys.exit(0)
+    # Operator modes report progress and failures on stderr; hook mode keeps
+    # stdout for the injected context and logs to ERR_LOG only.
+    if argv and not any(type(h) is logging.StreamHandler for h in logger.handlers):
+        console = logging.StreamHandler(sys.stderr)
+        console.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(console)
+    # Missing required settings fail at startup, naming the setting.
+    require_settings()
+    if "--install-hook" in argv:
+        install_hook_mode()
+        return
     # Fail-open applies to HOOK MODE ONLY. The CLI modes are operator tools:
     # a --reindex against a missing directory must fail loudly with a nonzero
     # exit, not pretend success (adversarial-review finding: the old shape
     # swallowed CLI errors too, so a broken bootstrap looked like a clean one).
-    if "--reindex" in sys.argv:
+    if "--reindex" in argv:
         reindex()
-    elif "--query" in sys.argv:
-        query_mode(sys.argv[sys.argv.index("--query") + 1])
+    elif "--query" in argv:
+        pos = argv.index("--query") + 1
+        if pos >= len(argv):
+            sys.exit("usage: session-memory --query TEXT")
+        query_mode(argv[pos])
     else:
         try:
             hook_mode()
         except SystemExit:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - last-resort boundary; hook is fail-open and logs
             log_err(f"hook top-level: {type(e).__name__}: {e}")
         sys.exit(0)  # fail-open, always
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-session-memory"
+version = "0.1.0"
+description = "Local RAG session memory for Claude Code: a UserPromptSubmit hook backed by Ollama embeddings."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# Runtime is standard library only.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.3", "ruff>=0.6", "deptry>=0.20"]
+
+[project.scripts]
+session-memory = "session_memory:main"
+
+[tool.setuptools]
+py-modules = ["session_memory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.deptry]
+pep621_dev_dependency_groups = ["dev"]
+
+[tool.deptry.per_rule_ignores]
+# eval_recall is a script under eval/ that the tests put on sys.path; it is not a package.
+DEP001 = ["eval_recall"]

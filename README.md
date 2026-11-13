@@ -8,6 +8,9 @@
 > your machine, which is the point — it was built for an environment where
 > the memory content cannot leave the host.
 
+Type: command-line tool (console script `session-memory`, also registered as a
+Claude Code `UserPromptSubmit` hook).
+
 I run this in production on every prompt of every Claude Code session, over a
 memory corpus of ~140 files. This repo is the same code with paths made
 configurable and the eval harness included, plus a synthetic demo corpus so
@@ -135,6 +138,8 @@ standard + 5 adversarial) ship in the repo:
 
 ```bash
 ollama pull embeddinggemma
+export OLLAMA_HOST=...                       # required
+export SESSION_MEMORY_MODEL=embeddinggemma   # required
 python3 eval/eval_recall.py --corpus demo-corpus --queries eval/queries.jsonl
 python3 eval/eval_recall.py diff        # after a second run: attribution
 ```
@@ -155,12 +160,51 @@ is the *pipeline*: embed → score → manifest → attribute.
 
 ```bash
 git clone https://github.com/wesglockzin/claude-code-session-memory
-export CLAUDE_MEMORY_DIR=~/.claude/memory   # your memory directory
-python3 session_memory.py --reindex          # bootstrap the index
-python3 session_memory.py --query "anything" # sanity-check retrieval
+cd claude-code-session-memory && pip install -e .
+export OLLAMA_HOST=...                       # required, see Settings
+export SESSION_MEMORY_MODEL=...              # required, see Settings
+session-memory --reindex                     # bootstrap the index
+session-memory --query "anything"            # sanity-check retrieval
 ```
 
-Then register it in `~/.claude/settings.json`:
+### Settings
+
+All settings are environment variables (see `.env.example`). The two required
+ones have no default; the tool exits at startup naming the one that is missing.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `OLLAMA_HOST` | yes | none | Ollama base URL |
+| `SESSION_MEMORY_MODEL` | yes | none | embedding model name in Ollama |
+| `CLAUDE_MEMORY_DIR` | no | `~/.claude/memory` | directory of `*.md` memory files |
+| `SESSION_MEMORY_STATE` | no | `~/.claude/session-memory` | index and logs |
+| `SESSION_MEMORY_EXCLUDE` | no | `MEMORY.md` | comma-separated basenames to skip |
+| `CLAUDE_SETTINGS_PATH` | no | `~/.claude/settings.json` | file `--install-hook` edits |
+
+Logging: in hook mode stdout is what Claude Code injects, so errors go to
+`hook.err.log` in the state directory. The operator modes (`--reindex`,
+`--query`, `--install-hook`, the eval script) log progress and failures to
+stderr as well. An HTTP error from Ollama is reported with its status and body.
+
+The hook needs these in the environment Claude Code runs it in. The query and
+document prefixes are for EmbeddingGemma-style models, and the similarity floor
+was calibrated for that regime. The index records the exact model string, so
+changing it (even `embeddinggemma` to `embeddinggemma:latest`) discards the
+existing index until you run `session-memory --reindex`.
+
+Then register the hook with one command:
+
+```bash
+session-memory --install-hook
+```
+
+It merges a `UserPromptSubmit` entry into `~/.claude/settings.json` (or the
+file named by `CLAUDE_SETTINGS_PATH`), keeps your other settings, and does
+nothing if a `session-memory` entry (bare name or a path ending in
+`/session-memory`) is already there. The command is the bare name, so
+`session-memory` must be on the `PATH` of Claude Code, and `OLLAMA_HOST` and
+`SESSION_MEMORY_MODEL` must be set in its environment. `session-memory --help`
+lists all modes. The entry it writes is:
 
 ```json
 {
@@ -170,7 +214,7 @@ Then register it in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/session_memory.py"
+            "command": "session-memory"
           }
         ]
       }
@@ -185,7 +229,7 @@ Requirements: Python ≥ 3.10, [Ollama](https://ollama.com) with
 ## Tests
 
 ```bash
-pip install pytest && python -m pytest -q
+pip install -e ".[dev]" && python -m pytest -q
 ```
 
 The embedder is stubbed — what's under test is everything around the model:
