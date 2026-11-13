@@ -189,6 +189,8 @@ def embed(text: str, timeout: float) -> list[float] | None:
                 vec = pick(json.loads(r.read()))
             if vec:
                 return vec
+            LAST_EMBED["error"] = f"empty embedding from {url}"
+            log_err(f"embed: {LAST_EMBED['error']}")
         except urllib.error.HTTPError as e:
             detail = e.read(300).decode("utf-8", errors="replace")
             LAST_EMBED["error"] = f"HTTP {e.code} from {url}: {detail}"
@@ -448,9 +450,11 @@ def reindex() -> None:
     files = corpus_files()
     idx = {"model": MODEL, "regime": REGIME, "entries": {}}
     failed = []
+    first_error = ""
     for i, (stem, path) in enumerate(sorted(files.items()), 1):
         entry = embed_entry(path, stem, os.path.getmtime(path), REINDEX_TIMEOUT)
         if entry is None:
+            first_error = first_error or LAST_EMBED["error"]
             failed.append(stem)
             continue
         idx["entries"][stem] = entry
@@ -461,7 +465,7 @@ def reindex() -> None:
     )
     if failed:
         logger.error("FAILED (%d): %s", len(failed), ", ".join(failed))
-        sys.exit(f"reindex failed: {LAST_EMBED['error']}")
+        sys.exit(f"reindex failed: {first_error}")
 
 
 def query_mode(text: str) -> None:
@@ -496,6 +500,15 @@ Required settings: OLLAMA_HOST, SESSION_MEMORY_MODEL (see .env.example).
 """
 
 
+def _is_session_memory_cmd(command: str) -> bool:
+    """True for `session-memory` or any path to it (e.g. a venv's bin/)."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    return len(parts) == 1 and os.path.basename(parts[0]) == "session-memory"
+
+
 def install_hook(settings_path: str, command: str) -> bool:
     """Merge a UserPromptSubmit hook running `command` into a Claude Code
     settings file. Returns False if it was already present (idempotent)."""
@@ -506,7 +519,10 @@ def install_hook(settings_path: str, command: str) -> bool:
     groups = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
     for group in groups:
         for h in group.get("hooks", []):
-            if h.get("command") == command:
+            existing = h.get("command")
+            if existing == command or (
+                isinstance(existing, str) and _is_session_memory_cmd(existing)
+            ):
                 return False
     groups.append({"hooks": [{"type": "command", "command": command}]})
     os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
@@ -522,10 +538,7 @@ def install_hook_mode() -> None:
     path = os.path.expanduser(
         os.environ.get("CLAUDE_SETTINGS_PATH", "~/.claude/settings.json")
     )
-    exe = os.path.abspath(sys.argv[0])
-    command = shlex.quote(
-        exe if os.path.basename(exe) == "session-memory" else "session-memory"
-    )
+    command = "session-memory"
     try:
         added = install_hook(path, command)
     except (OSError, ValueError) as e:

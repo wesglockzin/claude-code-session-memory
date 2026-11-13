@@ -200,8 +200,11 @@ session-memory --install-hook
 
 It merges a `UserPromptSubmit` entry into `~/.claude/settings.json` (or the
 file named by `CLAUDE_SETTINGS_PATH`), keeps your other settings, and does
-nothing if the entry is already there. `session-memory --help` lists all modes.
-The entry it writes is:
+nothing if a `session-memory` entry (bare name or a path ending in
+`/session-memory`) is already there. The command is the bare name, so
+`session-memory` must be on the `PATH` of Claude Code, and `OLLAMA_HOST` and
+`SESSION_MEMORY_MODEL` must be set in its environment. `session-memory --help`
+lists all modes. The entry it writes is:
 
 ```json
 {

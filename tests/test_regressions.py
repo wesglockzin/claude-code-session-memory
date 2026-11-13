@@ -229,7 +229,38 @@ def test_install_hook_creates_missing_settings_file(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(path))
     sm.main(["--install-hook"])
     data = json.loads(path.read_text())
-    assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["type"] == "command"
+    hook = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    assert hook == {"type": "command", "command": "session-memory"}
+
+
+def test_install_hook_treats_absolute_path_entry_as_installed(tmp_path):
+    path = tmp_path / "settings.json"
+    existing = {
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "/v/bin/session-memory"}]}
+            ]
+        }
+    }
+    path.write_text(json.dumps(existing))
+    assert sm.install_hook(str(path), "session-memory") is False
+    assert json.loads(path.read_text()) == existing
+
+
+def test_embed_empty_vector_records_error(monkeypatch):
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"embeddings": []}'
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", lambda *a, **k: Resp())
+    assert sm.embed("x", 1) is None
+    assert "empty embedding" in sm.LAST_EMBED["error"]
 
 
 def test_install_hook_refuses_corrupt_settings(tmp_path, monkeypatch):
