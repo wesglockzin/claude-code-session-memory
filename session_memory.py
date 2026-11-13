@@ -530,7 +530,9 @@ def install_hook_mode() -> None:
         added = install_hook(path, command)
     except (OSError, ValueError) as e:
         sys.exit(f"install-hook failed for {path}: {type(e).__name__}: {e}")
-    logger.info("%s hook %s in %s", command, "added" if added else "already present", path)
+    logger.info(
+        "%s hook %s in %s", command, "added" if added else "already present", path
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
