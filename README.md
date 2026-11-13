@@ -155,10 +155,29 @@ is the *pipeline*: embed → score → manifest → attribute.
 
 ```bash
 git clone https://github.com/wesglockzin/claude-code-session-memory
-export CLAUDE_MEMORY_DIR=~/.claude/memory   # your memory directory
-python3 session_memory.py --reindex          # bootstrap the index
-python3 session_memory.py --query "anything" # sanity-check retrieval
+cd claude-code-session-memory && pip install -e .
+export OLLAMA_HOST=...                       # required, see Settings
+export SESSION_MEMORY_MODEL=...              # required, see Settings
+session-memory --reindex                     # bootstrap the index
+session-memory --query "anything"            # sanity-check retrieval
 ```
+
+### Settings
+
+All settings are environment variables (see `.env.example`). The two required
+ones have no default; the tool exits at startup naming the one that is missing.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `OLLAMA_HOST` | yes | none | Ollama base URL |
+| `SESSION_MEMORY_MODEL` | yes | none | embedding model name in Ollama |
+| `CLAUDE_MEMORY_DIR` | no | `~/.claude/memory` | directory of `*.md` memory files |
+| `SESSION_MEMORY_STATE` | no | `~/.claude/session-memory` | index and logs |
+| `SESSION_MEMORY_EXCLUDE` | no | `MEMORY.md` | comma-separated basenames to skip |
+
+The hook needs these in the environment Claude Code runs it in. The query and
+document prefixes are for EmbeddingGemma-style models, and the similarity floor
+was calibrated for that regime.
 
 Then register it in `~/.claude/settings.json`:
 
@@ -170,7 +189,7 @@ Then register it in `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/session_memory.py"
+            "command": "session-memory"
           }
         ]
       }
@@ -185,7 +204,7 @@ Requirements: Python ≥ 3.10, [Ollama](https://ollama.com) with
 ## Tests
 
 ```bash
-pip install pytest && python -m pytest -q
+pip install -e ".[dev]" && python -m pytest -q
 ```
 
 The embedder is stubbed — what's under test is everything around the model:

@@ -27,7 +27,8 @@ Configuration (environment):
                          (default: ~/.claude/session-memory)
   SESSION_MEMORY_EXCLUDE comma-separated basenames to skip
                          (default: MEMORY.md)
-  OLLAMA_HOST            Ollama base URL (default: http://localhost:11434)
+  OLLAMA_HOST            Ollama base URL (REQUIRED, no default)
+  SESSION_MEMORY_MODEL   embedding model name (REQUIRED, no default)
 
 Modes:
   (no args)        hook mode — reads the UserPromptSubmit JSON payload on stdin
@@ -39,6 +40,9 @@ import json
 import math
 import os
 import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 
 # --- INTERPRETER GUARD -------------------------------------------------------
 # This module uses PEP-604 annotations (`list[float] | None`), which are
@@ -55,11 +59,20 @@ if sys.version_info < (3, 10):
     )
     sys.exit(2)
 # -----------------------------------------------------------------------------
-import urllib.request
-from datetime import datetime, timezone
+# Required settings: no defaults in code (they are checked by require_settings()
+# at startup, which names the missing variable).
+OLLAMA = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/")
+MODEL = os.environ.get("SESSION_MEMORY_MODEL", "").strip()
 
-OLLAMA = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-MODEL = "embeddinggemma"
+
+def require_settings() -> None:
+    missing = [
+        name
+        for name, value in (("OLLAMA_HOST", OLLAMA), ("SESSION_MEMORY_MODEL", MODEL))
+        if not value
+    ]
+    if missing:
+        sys.exit(f"session_memory: required setting(s) not set: {', '.join(missing)}")
 
 # --- EMBEDDING REGIME --------------------------------------------------------
 # EmbeddingGemma is trained with asymmetric instruction prefixes (per the
@@ -122,12 +135,15 @@ def log_err(msg: str) -> None:
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(ERR_LOG, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()} {msg}\n")
-    except Exception:
-        pass
+    except OSError:
+        pass  # the error log itself is unwritable; nothing left to do
 
 
 def embed(text: str, timeout: float) -> list[float] | None:
-    """Embed via Ollama; newer /api/embed with /api/embeddings fallback."""
+    """Embed via Ollama; newer /api/embed with /api/embeddings fallback.
+
+    Failures are logged with their kind: an HTTP error is reported with its
+    status and body, distinct from a connection failure."""
     for url, body, pick in (
         (f"{OLLAMA}/api/embed", {"model": MODEL, "input": text},
          lambda d: (d.get("embeddings") or [None])[0] or d.get("embedding")),
@@ -142,8 +158,13 @@ def embed(text: str, timeout: float) -> list[float] | None:
                 vec = pick(json.loads(r.read()))
             if vec:
                 return vec
-        except Exception:
-            continue
+        except urllib.error.HTTPError as e:
+            detail = e.read(300).decode("utf-8", errors="replace")
+            log_err(f"embed: HTTP {e.code} from {url}: {detail}")
+        except (urllib.error.URLError, OSError) as e:
+            log_err(f"embed: {url} unreachable: {type(e).__name__}: {e}")
+        except ValueError as e:
+            log_err(f"embed: bad response from {url}: {type(e).__name__}: {e}")
     return None
 
 
@@ -187,7 +208,7 @@ def load_index() -> dict:
 
 def save_index(idx: dict) -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = INDEX_PATH + ".tmp"
+    tmp = f"{INDEX_PATH}.{os.getpid()}.tmp"  # per-process: parallel hooks don't clash
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(idx, f)
     os.replace(tmp, INDEX_PATH)  # same dir → same device; atomic
@@ -336,9 +357,9 @@ def render(hits: list[tuple[float, str, dict]]) -> tuple[str, int]:
 def hook_mode() -> None:
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except ValueError:
         return
-    prompt = (payload.get("prompt") or "").strip()
+    prompt =(payload.get("prompt") or "").strip()
     if len(prompt) < MIN_PROMPT_LEN or prompt.startswith("/"):
         return
     idx = load_index()
@@ -369,8 +390,8 @@ def hook_mode() -> None:
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(RECALL_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
-    except Exception:
-        pass
+    except OSError as e:
+        log_err(f"recall log write failed: {e}")
     if out:
         print(out)
 
@@ -410,20 +431,31 @@ def query_mode(text: str) -> None:
         print(f"  {score:.3f}  {marker:<12} {stem}")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
+    """Console-script entry point (`session-memory`)."""
+    argv = sys.argv[1:] if argv is None else argv
+    # Missing required settings fail at startup, naming the setting.
+    require_settings()
     # Fail-open applies to HOOK MODE ONLY. The CLI modes are operator tools:
     # a --reindex against a missing directory must fail loudly with a nonzero
     # exit, not pretend success (adversarial-review finding: the old shape
     # swallowed CLI errors too, so a broken bootstrap looked like a clean one).
-    if "--reindex" in sys.argv:
+    if "--reindex" in argv:
         reindex()
-    elif "--query" in sys.argv:
-        query_mode(sys.argv[sys.argv.index("--query") + 1])
+    elif "--query" in argv:
+        pos = argv.index("--query") + 1
+        if pos >= len(argv):
+            sys.exit("usage: session-memory --query TEXT")
+        query_mode(argv[pos])
     else:
         try:
             hook_mode()
         except SystemExit:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - last-resort boundary; hook is fail-open and logs
             log_err(f"hook top-level: {type(e).__name__}: {e}")
         sys.exit(0)  # fail-open, always
+
+
+if __name__ == "__main__":
+    main()

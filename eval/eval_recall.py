@@ -90,7 +90,9 @@ def score(corpus: dict[str, str], queries: list[dict]) -> dict:
         n = len(pairs)
         if not n:
             return {}
-        r_at = lambda k: sum(1 for r, _ in pairs if r and r <= k) / n
+        def r_at(k):
+            return sum(1 for r, _ in pairs if r and r <= k) / n
+
         return {"n": n, "r1": round(r_at(1), 3), "r3": round(r_at(3), 3),
                 "r5": round(r_at(5), 3),
                 "mrr": round(sum(1.0 / r for r, _ in pairs if r) / n, 3)}
@@ -127,11 +129,16 @@ def write_manifest(result: dict, corpus: dict[str, str], args) -> str:
 
 
 def diff_mode() -> int:
-    files = sorted(os.listdir(MANIFEST_DIR)) if os.path.isdir(MANIFEST_DIR) else []
+    names = os.listdir(MANIFEST_DIR) if os.path.isdir(MANIFEST_DIR) else []
+    files = sorted(n for n in names if n.endswith(".json"))
     if len(files) < 2:
         print("need at least two manifests to diff")
         return 0
-    a, b = (json.load(open(os.path.join(MANIFEST_DIR, f))) for f in files[-2:])
+    loaded = []
+    for f in files[-2:]:
+        with open(os.path.join(MANIFEST_DIR, f), encoding="utf-8") as fh:
+            loaded.append(json.load(fh))
+    a, b = loaded
     print(f"comparing {files[-2]} -> {files[-1]}")
     ma, mb = a["metrics"]["full"], b["metrics"]["full"]
     for k in ("r1", "r3", "mrr"):
@@ -158,7 +165,8 @@ def main() -> int:
     args = p.parse_args()
 
     corpus = load_corpus(args.corpus)
-    queries = [json.loads(l) for l in open(args.queries, encoding="utf-8") if l.strip()]
+    with open(args.queries, encoding="utf-8") as qf:
+        queries = [json.loads(line) for line in qf if line.strip()]
     print(f"corpus: {len(corpus)} docs | queries: {len(queries)} | model: {MODEL} ({REGIME})")
     result = score(corpus, queries)
 
@@ -175,9 +183,12 @@ def main() -> int:
     print(f"manifest: {path}")
 
     if args.bar:
-        bar = dict(kv.split("=") for kv in args.bar.split(","))
+        try:
+            bar = {k: float(v) for k, v in (kv.split("=") for kv in args.bar.split(","))}
+        except ValueError:
+            p.error(f"--bar must look like r1=0.80,r3=0.93,mrr=0.87; got {args.bar!r}")
         full = result["full"]
-        fails = [k for k, v in bar.items() if full.get(k, 0) < float(v)]
+        fails = [k for k, v in bar.items() if full.get(k, 0) < v]
         if fails:
             print(f"BELOW BAR on {fails} (bar {bar}) — gate FAILS")
             return 1
